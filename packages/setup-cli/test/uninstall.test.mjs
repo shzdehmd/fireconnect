@@ -6,8 +6,10 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { userSettingsPath } from "../lib/fireconnect-core.mjs";
 import { opencodeConfigPath } from "../lib/opencode-core.mjs";
-import { codexConfigPath } from "../lib/codex-core.mjs";
+import { codexBackupPath, codexConfigPath, codexDataDir, CODEX_CATALOG_TOML_REF } from "../lib/codex-core.mjs";
+import { patchCodexCatalogRefRaw } from "../lib/codex-toml-patch.mjs";
 import { globalConfigPath } from "../lib/global-config.mjs";
+import { writeJson } from "../lib/fireconnect-core.mjs";
 
 const CLI = path.join(import.meta.dirname, "..", "bin", "fireconnect.mjs");
 
@@ -89,6 +91,85 @@ describe("uninstall", () => {
     assert.equal(await pathExists(path.join(home, ".fireconnect/claude")), false);
     assert.equal(await pathExists(path.join(home, ".fireconnect/opencode")), false);
     assert.equal(await pathExists(path.join(home, ".fireconnect/codex")), false);
+    assert.equal(await pathExists(path.join(home, ".codex/fireworks-model-catalog.json")), false);
+  });
+
+  it("keeps codex catalog when uninstall cannot disable codex", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-codex-off-fail-"));
+    await mkdir(path.join(home, ".codex"), { recursive: true });
+
+    await runFireconnect(
+      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      { HOME: home },
+    );
+    await runFireconnect(
+      ["codex", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+
+    const configPath = codexConfigPath(home);
+    const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
+    await writeFile(
+      configPath,
+      patchCodexCatalogRefRaw(await readFile(configPath, "utf8"), CODEX_CATALOG_TOML_REF),
+      "utf8",
+    );
+    await writeFile(catalogPath, '{"models":[]}', "utf8");
+
+    const backupPath = codexBackupPath(codexDataDir(home), configPath);
+    await writeJson(backupPath, {
+      configPath: "/different/config.toml",
+      snapshot: { existed: true, raw: 'model = "gpt-4.1"\n' },
+    });
+
+    const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
+    assert.notEqual(uninstallResult.code, 0);
+    assert.match(uninstallResult.stderr, /failed to restore codex/i);
+    assert.equal(await pathExists(catalogPath), true);
+    assert.match(await readFile(configPath, "utf8"), /model_catalog_json/);
+  });
+
+  it("keeps codex catalog on uninstall when restored config still references it", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "fc-uninstall-keep-catalog-"));
+    await mkdir(path.join(home, ".codex"), { recursive: true });
+
+    await runFireconnect(
+      ["configure", "--harnesses", "codex", "--api-key", "fw_test_key_12345", "--api-key-mode", "literal"],
+      { HOME: home },
+    );
+    await runFireconnect(
+      ["codex", "on", "--api-key", "fw_test_key_12345"],
+      { HOME: home, FIREWORKS_API_KEY: "fw_test_key_12345" },
+    );
+
+    const configPath = codexConfigPath(home);
+    const catalogPath = path.join(home, ".codex/fireworks-model-catalog.json");
+    await writeFile(
+      configPath,
+      patchCodexCatalogRefRaw(await readFile(configPath, "utf8"), CODEX_CATALOG_TOML_REF),
+      "utf8",
+    );
+    await writeFile(catalogPath, '{"models":[]}', "utf8");
+
+    const original = [
+      'model_provider = "openai"',
+      `model_catalog_json = "${CODEX_CATALOG_TOML_REF}"`,
+      'model = "gpt-4.1"',
+      "",
+    ].join("\n");
+    await writeJson(codexBackupPath(codexDataDir(home), configPath), {
+      configPath: path.resolve(configPath),
+      snapshot: { existed: true, raw: original },
+    });
+
+    const offResult = await runFireconnect(["codex", "off"], { HOME: home });
+    assert.equal(offResult.code, 0);
+    assert.equal(await pathExists(catalogPath), true);
+
+    const uninstallResult = await runFireconnect(["uninstall"], { HOME: home });
+    assert.equal(uninstallResult.code, 0);
+    assert.equal(await pathExists(catalogPath), true);
+    assert.match(await readFile(configPath, "utf8"), /model_catalog_json/);
   });
 
   it("does not mutate settings when harness was configured but not enabled", async () => {

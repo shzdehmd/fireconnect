@@ -105,3 +105,9 @@ in `config.json`. Pi also writes `~/.pi/agent/settings.json` and
 2. Harness-local stored key
 3. Global `config.json`
 4. `FIREWORKS_API_KEY` environment variable
+
+## Claude Code pricing
+
+Claude Code shows Anthropic list prices in `/model`; Fireworks bills separately at serverless
+rates. FireConnect surfaces Fireworks pricing via `claude status`, `claude model list`, and the
+custom model description in settings. Details: [claude-code-pricing.md](claude-code-pricing.md).

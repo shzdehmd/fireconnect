@@ -31,8 +31,8 @@ describe("applyModelMapping", () => {
         main: newMain,
         opus: "accounts/fireworks/routers/kimi-k2p7-code-fast",
         sonnet: "accounts/fireworks/models/glm-5p1",
-        haiku: "accounts/fireworks/models/minimax-m2p5",
-        subagent: "accounts/fireworks/models/minimax-m2p5",
+        haiku: "accounts/fireworks/models/deepseek-v4-flash",
+        subagent: "accounts/fireworks/models/deepseek-v4-flash",
       },
     });
 

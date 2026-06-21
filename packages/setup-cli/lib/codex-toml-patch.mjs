@@ -10,6 +10,7 @@ const LEGACY_FIRECONNECT_PROFILE_LINE = /^profile\s*=\s*["']fireconnect["']\s*$/
 const ROOT_PROFILE_LINE = /^profile\s*=.+$/;
 const ROOT_MODEL_PROVIDER_LINE = /^model_provider\s*=.+$/;
 const ROOT_MODEL_LINE = /^model\s*=.+$/;
+const ROOT_MODEL_CATALOG_LINE = /^model_catalog_json\s*=.+$/;
 const CODEX_BEARER_AUTH_LINE = /^experimental_bearer_token\s*=.+$/;
 const CODEX_ENV_AUTH_LINE = /^env_key\s*=.+$/;
 
@@ -41,6 +42,54 @@ function ensureTrailingNewline(text) {
   return text.endsWith("\n") ? text : `${text}\n`;
 }
 
+function rootHasMatchingLine(raw, pattern) {
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (isAnyTableHeader(trimmed)) {
+      break;
+    }
+    if (pattern.test(trimmed)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @param {string} raw
+ * @param {(args: { line: string, trimmed: string }) => "keep" | "drop" | string} onRootLine
+ * @param {{ afterRootLine?: (args: { line: string, trimmed: string, out: string[] }) => void }} [hooks]
+ */
+function transformRootLines(raw, onRootLine, hooks = {}) {
+  const lines = raw.split("\n");
+  const out = [];
+  let atRoot = true;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (atRoot) {
+      const result = onRootLine({ line, trimmed });
+      if (result === "drop") {
+        // omit line
+      } else if (result === "keep") {
+        out.push(line);
+      } else if (typeof result === "string") {
+        out.push(result);
+      } else {
+        out.push(line);
+      }
+      hooks.afterRootLine?.({ line, trimmed, out });
+    } else {
+      out.push(line);
+    }
+    if (atRoot && isAnyTableHeader(trimmed)) {
+      atRoot = false;
+    }
+  }
+
+  return ensureTrailingNewline(out.join("\n"));
+}
+
 /**
  * @param {string} raw
  * @param {{ stripRootRouting?: boolean }} [options]
@@ -59,6 +108,7 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
     if (atRoot && stripRootRouting) {
       if (ROOT_PROFILE_LINE.test(trimmed)
         || ROOT_MODEL_PROVIDER_LINE.test(trimmed)
+        || ROOT_MODEL_CATALOG_LINE.test(trimmed)
         || ROOT_MODEL_LINE.test(trimmed)) {
         continue;
       }
@@ -85,18 +135,20 @@ export function stripFireconnectRoutingRaw(raw, { stripRootRouting = false } = {
 
 /**
  * @param {string} raw
- * @param {{ providerId: string, baseUrl: string, modelId: string, apiKey?: string, literalAuth?: boolean }} routing
+ * @param {{ providerId: string, baseUrl: string, modelId: string, catalogPath?: string, apiKey?: string, literalAuth?: boolean }} routing
  */
 export function patchFireconnectRoutingRaw(raw, {
   providerId,
   baseUrl,
   modelId,
+  catalogPath = "",
   apiKey = "",
   literalAuth = false,
 }) {
   const base = stripFireconnectRoutingRaw(raw, { stripRootRouting: true });
   const routingBlock = [
     `model_provider = "${providerId}"`,
+    ...(catalogPath ? [`model_catalog_json = "${catalogPath}"`] : []),
     `model = "${modelId}"`,
   ].join("\n");
   const tablesBlock = [
@@ -116,27 +168,44 @@ export function patchFireconnectRoutingRaw(raw, {
 }
 
 /**
+ * Insert or update root `model_catalog_json` after `model_provider` when missing.
+ * @param {string} raw
+ * @param {string} catalogPath
+ */
+export function patchCodexCatalogRefRaw(raw, catalogPath) {
+  if (!catalogPath) {
+    return ensureTrailingNewline(raw);
+  }
+
+  const hasCatalog = rootHasMatchingLine(raw, ROOT_MODEL_CATALOG_LINE);
+  let inserted = false;
+
+  return transformRootLines(raw, ({ trimmed }) => {
+    if (hasCatalog && ROOT_MODEL_CATALOG_LINE.test(trimmed)) {
+      return `model_catalog_json = "${catalogPath}"`;
+    }
+    return "keep";
+  }, {
+    afterRootLine: ({ trimmed, out }) => {
+      if (!hasCatalog && !inserted && ROOT_MODEL_PROVIDER_LINE.test(trimmed)) {
+        out.push(`model_catalog_json = "${catalogPath}"`);
+        inserted = true;
+      }
+    },
+  });
+}
+
+/**
  * @param {string} raw
  * @param {string} modelId
  */
 export function patchCodexModelRaw(raw, modelId) {
-  const lines = raw.split("\n");
-  const out = [];
-  let atRoot = true;
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (atRoot && /^model\s*=/.test(trimmed)) {
-      out.push(`model = "${modelId}"`);
-      continue;
+  return transformRootLines(raw, ({ trimmed }) => {
+    if (/^model\s*=/.test(trimmed)) {
+      return `model = "${modelId}"`;
     }
-    if (isAnyTableHeader(trimmed)) {
-      atRoot = false;
-    }
-    out.push(line);
-  }
-
-  return ensureTrailingNewline(out.join("\n"));
+    return "keep";
+  });
 }
 
 /**

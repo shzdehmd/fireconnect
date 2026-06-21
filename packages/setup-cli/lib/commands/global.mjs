@@ -10,7 +10,10 @@ import {
   OPENCODE_DATA_RELATIVE_DIR,
 } from "../opencode-core.mjs";
 import {
+  CODEX_CATALOG_RELATIVE_PATH,
   CODEX_DATA_RELATIVE_DIR,
+  codexConfigPath,
+  snapshotReferencesFireworksCatalog,
 } from "../codex-core.mjs";
 import {
   PI_DATA_RELATIVE_DIR,
@@ -20,6 +23,7 @@ import {
   globalConfigPath,
 } from "../global-config.mjs";
 import { getHarness } from "../harness-registry.mjs";
+import { HARNESS } from "../harness.mjs";
 import { runConfigureCommand } from "./configure.mjs";
 
 const CLI_NAME = "fireconnect";
@@ -306,10 +310,26 @@ export async function runUninstallCommand(ctx) {
     }
   }
 
+  const codexOffFailed = offErrors.some((error) => error.harnessId === HARNESS.CODEX);
+  let removeCatalog = !codexOffFailed;
+  if (removeCatalog) {
+    try {
+      const raw = await readFile(codexConfigPath(home), "utf8");
+      if (snapshotReferencesFireworksCatalog(raw)) {
+        removeCatalog = false;
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
   const pathsToRemove = [
     path.join(home, DEFAULT_DATA_DIR),
     path.join(home, OPENCODE_DATA_RELATIVE_DIR),
     path.join(home, CODEX_DATA_RELATIVE_DIR),
+    ...(removeCatalog ? [path.join(home, CODEX_CATALOG_RELATIVE_PATH)] : []),
     path.join(home, PI_DATA_RELATIVE_DIR),
     globalConfigPath(home),
     path.join(home, ".fireconnect/cli"),

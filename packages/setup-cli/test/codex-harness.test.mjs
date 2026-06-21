@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, writeFile, mkdir, unlink, access, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawn } from "node:child_process";
@@ -54,6 +55,9 @@ describe("codex harness integration", () => {
     assert.match(enabled, /\[model_providers\.fireworks-ai\]/);
     assert.doesNotMatch(enabled, /profile = "fireconnect"/);
     assert.doesNotMatch(enabled, /\[profiles\.fireconnect\]/);
+    assert.doesNotMatch(enabled, /model_catalog_json/);
+    assert.equal(existsSync(path.join(home, ".codex", "fireworks-model-catalog.json")), false);
+    assert.match(onResult.stdout, /could not generate model catalog/i);
     assert.match(enabled, /experimental_bearer_token = "fw_test_key_12345"/);
     assert.match(enabled, /wire_api = "responses"/);
     assert.match(enabled, /\[\[mcp_servers\]\]/);

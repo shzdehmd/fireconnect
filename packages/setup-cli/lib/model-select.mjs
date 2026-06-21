@@ -21,16 +21,17 @@ import {
   enablePiFireworks,
   piProviderStatus,
 } from "./pi-core.mjs";
-import {
-  filterCatalogBySearch,
+import { filterCatalogBySearch,
   loadServerlessCatalog,
 } from "./fireworks-models.mjs";
+import { filterPickerCatalogForCodex } from "./codex-catalog.mjs";
 import { HARNESS } from "./harness.mjs";
 import { printClaudeModelActivationHint } from "./claude-hints.mjs";
 import {
   codexCurrentModelId,
   codexProviderStatus,
   codexStoredAuthRef,
+  loadCodexCatalogBundle,
   printCodexRestartHint,
   readCodexTomlIfExists,
   updateCodexModel,
@@ -272,7 +273,29 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
 
   const storedAuth = codexStoredAuthRef(doc);
   const keyType = detectApiKeyType(apiKey);
-  const { catalog } = await loadServerlessCatalog({ apiKey, keyType });
+  let pickerCatalog = options.pickerCatalog;
+  let codexCatalog = options.catalog ?? null;
+  if (!pickerCatalog || !codexCatalog) {
+    const bundle = await loadCodexCatalogBundle(apiKey);
+    pickerCatalog = pickerCatalog ?? bundle.pickerCatalog;
+    codexCatalog = codexCatalog ?? bundle.codexCatalog;
+  }
+  if (!pickerCatalog) {
+    pickerCatalog = (await loadServerlessCatalog({ apiKey, keyType })).catalog;
+  }
+  if (codexCatalog) {
+    pickerCatalog = filterPickerCatalogForCodex(pickerCatalog, codexCatalog);
+    if (pickerCatalog.length === 0) {
+      throw new Error(
+        "No Codex-compatible models found. Verify FIREWORKS_API_KEY and retry.",
+      );
+    }
+  } else if (doc.root.model_catalog_json) {
+    throw new Error(
+      "Could not refresh the Codex model catalog. Verify FIREWORKS_API_KEY and retry, "
+      + "or run: fireconnect codex on",
+    );
+  }
   const currentModel = codexCurrentModelId(doc)?.split("/").at(-1) ?? "(unset)";
 
   const rl = readline.createInterface({ input, output });
@@ -282,7 +305,7 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
 
     const picked = await pickFromCatalog({
       rl,
-      catalog,
+      catalog: pickerCatalog,
       options,
       promptLabel: "Pick a serverless model for Codex:",
     });
@@ -296,6 +319,8 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
       modelId: picked.shortId,
       apiKey: writeAuth,
       literalAuth: options.apiKeyFromFlag || literalAuth,
+      catalogPath: options.catalogPath ?? "",
+      catalog: codexCatalog,
     });
 
     console.log(`Updated Codex model: ${result.model}`);
@@ -305,7 +330,7 @@ export async function runCodexModelSelect({ options, configPath, apiKey, literal
   }
 }
 
-export async function runPiModelSelect({ options, settingsPath, authPath, dataDir, apiKey }) {
+export async function runPiModelSelect({ options, settingsPath, authPath, modelsPath, dataDir, apiKey }) {
   ensureInteractiveTerminal(HARNESS.PI);
 
   if (options.slot) {
@@ -350,6 +375,7 @@ export async function runPiModelSelect({ options, settingsPath, authPath, dataDi
     const result = await enablePiFireworks({
       settingsPath,
       authPath,
+      modelsPath,
       dataDir,
       apiKey: writeKey,
       apiKeyFromFlag: options.apiKeyFromFlag || existingKeyIsLiteral,

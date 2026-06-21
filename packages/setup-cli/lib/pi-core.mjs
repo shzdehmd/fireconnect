@@ -13,10 +13,20 @@ import {
 import { readRawIfExists } from "./opencode-core.mjs";
 
 export const PI_SETTINGS_RELATIVE_PATH = ".pi/agent/settings.json";
+export const PI_MODELS_RELATIVE_PATH = ".pi/agent/models.json";
 export const PI_DATA_RELATIVE_DIR = ".fireconnect/pi";
 export const PI_API_KEY_ENV_REF = "$FIREWORKS_API_KEY";
 const PI_PROVIDER = "fireworks";
 const PI_MANAGED_BY = "fireconnect";
+
+/** Fireworks routers FireConnect uses that Pi does not ship in its models.dev snapshot. */
+const PI_FIREWORKS_ROUTER_ENTRIES = [
+  { id: "accounts/fireworks/routers/glm-latest", name: "GLM Latest via Fireworks" },
+  { id: "accounts/fireworks/routers/kimi-fast-latest", name: "Kimi Fast Latest via Fireworks" },
+  { id: "accounts/fireworks/routers/kimi-k2p6-turbo", name: "Kimi K2.6 Turbo via Fireworks" },
+  { id: "accounts/fireworks/routers/kimi-k2p7-code-fast", name: "Kimi K2.7 Code Fast via Fireworks" },
+  { id: "accounts/fireworks/routers/kimi-latest", name: "Kimi Latest via Fireworks" },
+];
 
 function isFireconnectActive(settings) {
   return settings.defaultProvider === PI_PROVIDER
@@ -42,6 +52,54 @@ export function piAuthPath(home, authPath = "", settingsPath = "") {
   return path.join(home, ".pi/agent/auth.json");
 }
 
+export function piModelsPath(home, settingsPath = "") {
+  if (settingsPath) {
+    return path.join(path.dirname(settingsPath), "models.json");
+  }
+  return path.join(home, PI_MODELS_RELATIVE_PATH);
+}
+
+function fireworksModelEntry(modelId) {
+  const shortId = modelId.split("/").pop() ?? modelId;
+  return {
+    id: modelId,
+    name: `${shortId} via Fireworks`,
+    reasoning: true,
+  };
+}
+
+function piModelsToRegister(resolvedModel) {
+  const entries = [...PI_FIREWORKS_ROUTER_ENTRIES.map((entry) => ({
+    ...entry,
+    reasoning: true,
+  }))];
+  if (resolvedModel.startsWith("accounts/fireworks/")
+    && !entries.some((entry) => entry.id === resolvedModel)) {
+    entries.push(fireworksModelEntry(resolvedModel));
+  }
+  return entries;
+}
+
+export function mergePiFireworksRouterModels(config, resolvedModel) {
+  const next = config && typeof config === "object"
+    ? structuredClone(config)
+    : { providers: {} };
+  next.providers ??= {};
+  const fireworks = { ...(next.providers[PI_PROVIDER] ?? {}) };
+  const models = [...(fireworks.models ?? [])];
+  for (const entry of piModelsToRegister(resolvedModel)) {
+    const index = models.findIndex((model) => model.id === entry.id);
+    if (index >= 0) {
+      models[index] = { ...models[index], ...entry };
+    } else {
+      models.push(entry);
+    }
+  }
+  fireworks.models = models;
+  next.providers[PI_PROVIDER] = fireworks;
+  return next;
+}
+
 export function piDataDir(home, dataDir = "") {
   return dataDir || path.join(home, PI_DATA_RELATIVE_DIR);
 }
@@ -55,9 +113,9 @@ function statePath(dataDir) {
   return path.join(dataDir, "state.json");
 }
 
-async function writeState(dataDir, enabled) {
+async function writeState(dataDir, enabled, managedModelIds = []) {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await writeJson(statePath(dataDir), { enabled });
+  await writeJson(statePath(dataDir), { enabled, managedModelIds });
   await chmod(statePath(dataDir), 0o600);
 }
 
@@ -128,6 +186,7 @@ async function parseJsonFile(filePath, snapshot) {
 export async function enablePiFireworks({
   settingsPath,
   authPath,
+  modelsPath,
   dataDir,
   apiKey,
   apiKeyFromFlag = false,
@@ -140,8 +199,10 @@ export async function enablePiFireworks({
 
   const settingsSnapshot = await readRawIfExists(settingsPath);
   const authSnapshot = await readRawIfExists(authPath);
+  const modelsSnapshot = await readRawIfExists(modelsPath);
   const settings = await parseJsonFile(settingsPath, settingsSnapshot);
   const auth = await parseJsonFile(authPath, authSnapshot);
+  const modelsConfig = await parseJsonFile(modelsPath, modelsSnapshot);
 
   const resolvedKeyType = keyType === "fireworks"
     ? detectApiKeyType(resolvePiApiKeyValue(apiKey))
@@ -164,11 +225,13 @@ export async function enablePiFireworks({
     if (authSnapshot.existed) {
       await writePrivateBackup(dataDir, backupPath(dataDir, authPath, "auth"), authPath, authSnapshot);
     }
+    await writePrivateBackup(dataDir, backupPath(dataDir, modelsPath, "models"), modelsPath, modelsSnapshot);
   } else if (settings.defaultProvider !== PI_PROVIDER && !hasFireworksModel) {
     await writePrivateBackup(dataDir, settingsBackup, settingsPath, settingsSnapshot);
     if (authSnapshot.existed) {
       await writePrivateBackup(dataDir, backupPath(dataDir, authPath, "auth"), authPath, authSnapshot);
     }
+    await writePrivateBackup(dataDir, backupPath(dataDir, modelsPath, "models"), modelsPath, modelsSnapshot);
   }
 
   const apiKeyValue = apiKeyFromFlag ? apiKey : PI_API_KEY_ENV_REF;
@@ -181,7 +244,9 @@ export async function enablePiFireworks({
     ...auth,
     [PI_PROVIDER]: { type: "api_key", key: apiKeyValue, managedBy: PI_MANAGED_BY },
   });
-  await writeState(dataDir, true);
+  await writeJson(modelsPath, mergePiFireworksRouterModels(modelsConfig, resolvedModel));
+  const managedModelIds = piModelsToRegister(resolvedModel).map((entry) => entry.id);
+  await writeState(dataDir, true, managedModelIds);
 
   return {
     model: resolvedModel,
@@ -230,6 +295,47 @@ async function stripManagedSettings(settingsPath) {
   return changed;
 }
 
+function managedModelIdsFromState(state) {
+  if (Array.isArray(state.managedModelIds) && state.managedModelIds.length > 0) {
+    return state.managedModelIds;
+  }
+  return PI_FIREWORKS_ROUTER_ENTRIES.map((entry) => entry.id);
+}
+
+async function stripManagedModels(modelsPath, managedModelIds) {
+  if (!(await readRawIfExists(modelsPath)).existed) {
+    return false;
+  }
+  const config = await readJsonIfExists(modelsPath);
+  const fireworks = config.providers?.[PI_PROVIDER];
+  if (!fireworks || !Array.isArray(fireworks.models)) {
+    return false;
+  }
+
+  const managedIds = new Set(managedModelIds);
+  const remaining = fireworks.models.filter((model) => !managedIds.has(model.id));
+  if (remaining.length === fireworks.models.length) {
+    return false;
+  }
+
+  const next = { ...config, providers: { ...config.providers } };
+  if (remaining.length === 0) {
+    delete next.providers[PI_PROVIDER];
+    if (Object.keys(next.providers).length === 0) {
+      await unlink(modelsPath).catch((error) => {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      });
+      return true;
+    }
+  } else {
+    next.providers[PI_PROVIDER] = { ...fireworks, models: remaining };
+  }
+  await writeJson(modelsPath, next);
+  return true;
+}
+
 async function stripManagedAuth(authPath) {
   if (!(await readRawIfExists(authPath)).existed) {
     return false;
@@ -252,9 +358,10 @@ async function stripManagedAuth(authPath) {
   return true;
 }
 
-export async function disablePiFireworks({ settingsPath, authPath, dataDir }) {
+export async function disablePiFireworks({ settingsPath, authPath, modelsPath, dataDir }) {
   const state = await readJsonIfExists(statePath(dataDir));
   const wasEnabled = state.enabled === true;
+  const managedModelIds = managedModelIdsFromState(state);
   const settingsBackup = backupPath(dataDir, settingsPath, "settings");
   const hasBackup = (await readJsonIfExists(settingsBackup)).snapshot !== undefined;
 
@@ -272,10 +379,11 @@ export async function disablePiFireworks({ settingsPath, authPath, dataDir }) {
     if (isFireconnectManagedAuth(auth)) {
       changed = (await stripManagedAuth(authPath)) || changed;
     }
+    changed = (await stripManagedModels(modelsPath, managedModelIds)) || changed;
     if (!changed) {
       return { changed: false };
     }
-    await writeState(dataDir, false);
+    await writeState(dataDir, false, []);
     return { changed: true };
   }
 
@@ -296,6 +404,17 @@ export async function disablePiFireworks({ settingsPath, authPath, dataDir }) {
     changed = (await stripManagedAuth(authPath)) || changed;
   }
 
-  await writeState(dataDir, false);
+  const restoredModels = await restoreBackedUpFile(
+    modelsPath,
+    backupPath(dataDir, modelsPath, "models"),
+    "models",
+  );
+  if (restoredModels) {
+    changed = true;
+  } else {
+    changed = (await stripManagedModels(modelsPath, managedModelIds)) || changed;
+  }
+
+  await writeState(dataDir, false, []);
   return { changed };
 }

@@ -16,7 +16,7 @@ export const DEFAULT_OPUS_MODEL = "glm-latest";
 export const DEFAULT_FIREPASS_MAIN_MODEL = "glm-latest";
 export const DEFAULT_MAIN_MODEL = "glm-latest";
 export const DEFAULT_SONNET_MODEL = "glm-5p1";
-export const DEFAULT_HAIKU_MODEL = "minimax-m2p5";
+export const DEFAULT_HAIKU_MODEL = "deepseek-v4-flash";
 export const DEFAULT_SUBAGENT_MODEL = DEFAULT_HAIKU_MODEL;
 
 const FIREWORKS_ROUTER_SHORT_IDS = new Set([
@@ -59,8 +59,8 @@ export const DEFAULT_FIREWORKS_PRESET = {
   ANTHROPIC_MODEL: GLM_LATEST_ROUTER_ID,
   ANTHROPIC_DEFAULT_OPUS_MODEL: GLM_LATEST_ROUTER_ID,
   ANTHROPIC_DEFAULT_SONNET_MODEL: "accounts/fireworks/models/glm-5p1",
-  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/minimax-m2p5",
-  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/minimax-m2p5",
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
+  CLAUDE_CODE_SUBAGENT_MODEL: "accounts/fireworks/models/deepseek-v4-flash",
   ANTHROPIC_CUSTOM_MODEL_OPTION: GLM_LATEST_ROUTER_ID,
   ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: "glm-latest via Fireworks",
   ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION: "Fireworks Anthropic-compatible open model",

@@ -4,6 +4,7 @@ import {
 } from "./fireconnect-core.mjs";
 import {
   codexConfigPath,
+  codexCatalogPath,
   codexDataDir,
 } from "./codex-core.mjs";
 import {
@@ -13,6 +14,7 @@ import {
 import {
   piAuthPath,
   piDataDir,
+  piModelsPath,
   piSettingsPath,
 } from "./pi-core.mjs";
 
@@ -45,6 +47,7 @@ export function codexPathsFor(ctx) {
   return {
     configPath: codexConfigPath(ctx.home, ctx.configPath),
     dataDir: codexDataDir(ctx.home, ctx.dataDir),
+    catalogPath: codexCatalogPath(ctx.home, ctx.catalogPath),
   };
 }
 
@@ -56,6 +59,7 @@ export function piPathsFor(ctx) {
   return {
     settingsPath,
     authPath: piAuthPath(ctx.home, "", settingsPath),
+    modelsPath: piModelsPath(ctx.home, settingsPath),
     dataDir: piDataDir(ctx.home, ctx.dataDir),
   };
 }

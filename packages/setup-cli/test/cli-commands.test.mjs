@@ -244,7 +244,7 @@ describe("fireconnect <harness> status", () => {
       assert.equal(json.defaults.main, GLM_LATEST);
       assert.equal(json.defaults.opus, GLM_LATEST);
       assert.equal(json.defaults.sonnet, "glm-5p1");
-      assert.equal(json.defaults.haiku, "minimax-m2p5");
+      assert.equal(json.defaults.haiku, "deepseek-v4-flash");
     });
   });
 

@@ -60,8 +60,8 @@ Default models:
 main     -> glm-latest
 opus     -> glm-latest
 sonnet   -> glm-5p1
-haiku    -> minimax-m2p5
-subagent -> minimax-m2p5
+haiku    -> deepseek-v4-flash
+subagent -> deepseek-v4-flash
 ```
 
 ## Manual Setup
@@ -93,8 +93,8 @@ The setup writes these Claude Code settings:
     "ANTHROPIC_MODEL": "accounts/fireworks/routers/glm-latest[1m]",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "accounts/fireworks/routers/glm-latest[1m]",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "accounts/fireworks/models/glm-5p1",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "accounts/fireworks/models/minimax-m2p5",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "accounts/fireworks/models/minimax-m2p5"
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "accounts/fireworks/models/deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "accounts/fireworks/models/deepseek-v4-flash"
   }
 }
 ```
@@ -158,8 +158,21 @@ fireconnect opencode model select --search glm
 
 | Command | Shows |
 |---------|--------|
-| `fireconnect claude status` | Your current provider, auth, and configured alias mapping |
-| `fireconnect claude model list` | Available serverless endpoints from the Fireworks API |
+| `fireconnect claude status` | Your current provider, auth, configured alias mapping, and **Fireworks serverless rates** per slot |
+| `fireconnect claude model list` | Available serverless endpoints from the Fireworks API, with **IN / OUT pricing** where known |
+
+### Claude Code pricing estimates (important)
+
+Claude Code’s `/model` picker and session cost estimates use **Anthropic list prices** (for
+example **$5 / $25 per Mtok** on the default Opus-style mapping for `glm-latest`). **Fireworks
+bills at serverless model rates** (for example about **$1.40 / $4.40 per Mtok** for GLM 5.2 on
+standard serverless) — the UI estimate can be much higher than your real bill.
+
+FireConnect cannot override Claude Code’s price column. Use `fireconnect claude status` and
+`fireconnect claude model list` for Fireworks rates, and check the
+[Fireworks billing dashboard](https://app.fireworks.ai/account/billing) for actual spend.
+
+Full explanation: [docs/claude-code-pricing.md](docs/claude-code-pricing.md).
 
 After `fireconnect claude on`, `model select`, or `model reset`, `settings.json` is updated
 immediately. To use the new model in Claude Code, run `/model` to activate it in the same
@@ -173,7 +186,7 @@ Short IDs are accepted everywhere and are normalized to their full paths automat
 |----------|----------|-------|
 | `glm-latest` | All-around use, agentic tasks | Default for `main` and `opus` slots. Strong reasoning, 1M context. |
 | `glm-5p1` | General use (lighter) | Default `sonnet` slot. Good balance of speed and quality. |
-| `minimax-m2p5` | Background / fast tasks | Default `haiku` and `subagent` slots. Lowest latency. |
+| `deepseek-v4-flash` | Background / fast tasks | Default `haiku` and `subagent` slots. Lowest latency. |
 
 **Fire Pass keys** (`fpk_...`): all slots default to `glm-latest`.
 
@@ -182,7 +195,7 @@ Short IDs are accepted everywhere and are normalized to their full paths automat
 ```bash
 fireconnect claude model select --slot opus    # pick a model interactively
 fireconnect claude model select --slot sonnet  # pick general model interactively
-fireconnect claude on --sonnet glm-5p1 --haiku minimax-m2p5  # set non-interactively
+fireconnect claude on --sonnet glm-5p1 --haiku deepseek-v4-flash  # set non-interactively
 ```
 
 **OpenCode and Pi** use a single default model; use `fireconnect <harness> model select` or pass `--main <slug>` to `on`.

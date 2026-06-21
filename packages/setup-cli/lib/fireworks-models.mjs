@@ -12,40 +12,45 @@ export const FIREPASS_ROUTER_IDS = new Set([
   "accounts/fireworks/routers/kimi-k2p7-code-fast",
 ]);
 
-const BUILTIN_ROUTERS = [
+export const BUILTIN_ROUTERS = [
   {
     id: "accounts/fireworks/routers/glm-latest",
     shortId: "glm-latest",
     displayName: "GLM Latest via Fireworks",
+    baseModelId: "accounts/fireworks/models/glm-5p2",
     kind: KIND_SERVERLESS,
   },
   {
     id: "accounts/fireworks/routers/kimi-fast-latest",
     shortId: "kimi-fast-latest",
     displayName: "Kimi Fast Latest via Fireworks",
+    baseModelId: "accounts/fireworks/models/kimi-k2p6",
     kind: KIND_SERVERLESS,
   },
   {
     id: "accounts/fireworks/routers/kimi-k2p6-turbo",
     shortId: "kimi-k2p6-turbo",
     displayName: "Kimi K2.6 Turbo via Fireworks",
+    baseModelId: "accounts/fireworks/models/kimi-k2p6",
     kind: KIND_SERVERLESS,
   },
   {
     id: "accounts/fireworks/routers/kimi-k2p7-code-fast",
     shortId: "kimi-k2p7-code-fast",
     displayName: "Kimi K2.7 Code Fast via Fireworks",
+    baseModelId: "accounts/fireworks/models/kimi-k2p7-code",
     kind: KIND_SERVERLESS,
   },
   {
     id: "accounts/fireworks/routers/kimi-latest",
     shortId: "kimi-latest",
     displayName: "Kimi Latest via Fireworks",
+    baseModelId: "accounts/fireworks/models/kimi-k2p6",
     kind: KIND_SERVERLESS,
   },
 ];
 
-/** @typedef {{ id: string, shortId: string, displayName: string, kind: "serverless" }} CatalogEntry */
+/** @typedef {{ id: string, shortId: string, displayName: string, baseModelId?: string, kind: "serverless" }} CatalogEntry */
 
 export function shortIdFromResourceName(name) {
   if (typeof name !== "string" || !name) {
@@ -182,18 +187,24 @@ function dedupeCatalog(entries) {
 }
 
 export async function fetchServerlessCatalog(apiKey) {
-  const models = await fetchAllPages(
+  const models = await fetchServerlessCatalogRaw(apiKey);
+  return {
+    catalog: buildPickerCatalogFromApiModels(models),
+    routersUnavailable: false,
+  };
+}
+
+export function buildPickerCatalogFromApiModels(apiModels) {
+  const modelEntries = apiModels.map(normalizeModelEntry).filter(Boolean);
+  return dedupeCatalog([...modelEntries, ...BUILTIN_ROUTERS]);
+}
+
+export async function fetchServerlessCatalogRaw(apiKey) {
+  return fetchAllPages(
     `/v1/accounts/${PLATFORM_ACCOUNT_ID}/models?filter=${encodeURIComponent("supports_serverless=true")}&pageSize=200`,
     apiKey,
     "models",
   );
-
-  const modelEntries = models.map(normalizeModelEntry).filter(Boolean);
-
-  return {
-    catalog: dedupeCatalog([...modelEntries, ...BUILTIN_ROUTERS]),
-    routersUnavailable: false,
-  };
 }
 
 export function filterCatalogForKeyType(catalog, keyType) {
