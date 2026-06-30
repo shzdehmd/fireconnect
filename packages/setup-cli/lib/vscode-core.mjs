@@ -526,7 +526,7 @@ export async function enableVscodeFireworks({
   // Ensure the ItemTable exists so `on` works against a profile VS Code has
   // never launched (no state.vscdb yet). Idempotent + mkdirs the parent.
   await ensureItemTable(dbPath);
-  const encrypted = encryptSecret(apiKey, { variant });
+  const encrypted = await encryptSecret(apiKey, { variant, stateDbPath: dbPath });
   await writeItemTableValue(dbPath, secretStorageKey(secretId), encrypted);
 
   // Preserve models added via `model add`/`model select` when re-running `on`

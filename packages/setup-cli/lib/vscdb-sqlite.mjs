@@ -103,6 +103,58 @@ export async function readItemTableValue(dbPath, key) {
 }
 
 /**
+ * Read the first value whose key starts with `keyPrefix`. Useful for probing
+ * existing secrets (e.g. `secret://`) to determine the encryption version VS
+ * Code is using, without knowing the exact key. Returns `""` when the DB file,
+ * the ItemTable, or no matching row is present; any other error propagates.
+ * @param {string} dbPath
+ * @param {string} keyPrefix
+ * @returns {Promise<string>}
+ */
+export async function readFirstItemTableValueByKeyPrefix(dbPath, keyPrefix) {
+  if (!dbPath || !keyPrefix || !existsSync(dbPath)) {
+    return "";
+  }
+
+  const DatabaseSync = await loadNodeSqlite();
+  if (DatabaseSync) {
+    let db;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+      const row = db.prepare("SELECT value FROM ItemTable WHERE key LIKE ? || '%' LIMIT 1").get(keyPrefix);
+      const v = row?.value;
+      if (v == null) {
+        return "";
+      }
+      return typeof v === "string" ? v : new TextDecoder().decode(v);
+    } catch (error) {
+      if (isMissingTableError(error)) {
+        return "";
+      }
+      throw error;
+    } finally {
+      db?.close();
+    }
+  }
+
+  const sql = `SELECT value FROM ItemTable WHERE key LIKE '${sqlStringLiteral(keyPrefix)}%' LIMIT 1;`;
+  const result = spawnSync("sqlite3", [dbPath, sql], {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    if (isMissingTableError({ message: result.stderr })) {
+      return "";
+    }
+    throw new Error(`sqlite3 exited ${result.status}: ${(result.stderr || "").trim()}`);
+  }
+  return result.stdout.replace(/\n$/, "");
+}
+
+/**
  * Ensure the ItemTable exists in the DB (creating the DB file if needed). VS
  * Code/Cursor create it themselves on first launch; this lets the harness write
  * a secret into a freshly-installed (never-launched) profile too.
