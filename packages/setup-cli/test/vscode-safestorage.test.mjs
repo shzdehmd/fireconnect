@@ -61,7 +61,7 @@ describe("vscode-safestorage plaintext seam", () => {
     process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT = "1";
     try {
       assert.equal(await encryptSecret("fw_abc"), "fw_abc");
-      assert.equal(decryptSecret("fw_abc"), "fw_abc");
+      assert.equal(await decryptSecret("fw_abc"), "fw_abc");
     } finally {
       if (prev === undefined) {
         delete process.env.FIRECONNECT_VSCODE_SECRET_PLAINTEXT;
@@ -71,9 +71,9 @@ describe("vscode-safestorage plaintext seam", () => {
     }
   });
 
-  it("decryptSecret returns '' for empty/garbage input", () => {
-    assert.equal(decryptSecret(""), "");
-    assert.equal(decryptSecret("not-json-and-not-plaintext-mode"), "");
+  it("decryptSecret returns '' for empty/garbage input", async () => {
+    assert.equal(await decryptSecret(""), "");
+    assert.equal(await decryptSecret("not-json-and-not-plaintext-mode"), "");
   });
 });
 
@@ -136,7 +136,7 @@ describe("vscode-safestorage Linux OSCrypt parameter detection", () => {
       // to the v11+1iter default — which is the correct behavior.
       const encrypted = await encryptSecret("fw_test_key", { stateDbPath: dbPath });
       assert.equal(prefixOf(encrypted), "v11");
-      assert.equal(decryptSecret(encrypted), "fw_test_key");
+      assert.equal(await decryptSecret(encrypted), "fw_test_key");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -149,7 +149,7 @@ describe("vscode-safestorage Linux OSCrypt parameter detection", () => {
     try {
       const encrypted = await encryptSecret("fw_test_key", { stateDbPath: dbPath });
       assert.equal(prefixOf(encrypted), "v11");
-      assert.equal(decryptSecret(encrypted), "fw_test_key");
+      assert.equal(await decryptSecret(encrypted), "fw_test_key");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -160,7 +160,7 @@ describe("vscode-safestorage Linux OSCrypt parameter detection", () => {
     try {
       const encrypted = await encryptSecret("fw_test_key", { stateDbPath: dbPath });
       assert.equal(prefixOf(encrypted), "v11", "should default to v11");
-      assert.equal(decryptSecret(encrypted), "fw_test_key");
+      assert.equal(await decryptSecret(encrypted), "fw_test_key");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -169,16 +169,16 @@ describe("vscode-safestorage Linux OSCrypt parameter detection", () => {
   it("encryptSecret defaults to v11+1iter when no stateDbPath provided (Linux)", { skip: !isLinux }, async () => {
     const encrypted = await encryptSecret("fw_test_key");
     assert.equal(prefixOf(encrypted), "v11", "should default to v11 when no DB path to probe");
-    assert.equal(decryptSecret(encrypted), "fw_test_key");
+    assert.equal(await decryptSecret(encrypted), "fw_test_key");
   });
 
-  it("decryptSecret tries multiple iteration counts (Linux cross-generation compat)", { skip: !isLinux }, () => {
+  it("decryptSecret tries multiple iteration counts (Linux cross-generation compat)", { skip: !isLinux }, async () => {
     // A secret encrypted with 1 iteration should be decryptable
     const blob1 = JSON.stringify(aesEncrypt("fw_secret", "peanuts", "v11", 1));
-    assert.equal(decryptSecret(blob1), "fw_secret");
+    assert.equal(await decryptSecret(blob1), "fw_secret");
 
     // A secret encrypted with 1003 iterations should also be decryptable
     const blob1003 = JSON.stringify(aesEncrypt("fw_secret", "peanuts", "v11", 1003));
-    assert.equal(decryptSecret(blob1003), "fw_secret");
+    assert.equal(await decryptSecret(blob1003), "fw_secret");
   });
 });

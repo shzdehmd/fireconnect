@@ -1,6 +1,9 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import os from "node:os";
+import path from "node:path";
+import { existsSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { readFirstItemTableValueByKeyPrefix } from "./vscdb-sqlite.mjs";
 
 /**
@@ -24,10 +27,16 @@ import { readFirstItemTableValueByKeyPrefix } from "./vscdb-sqlite.mjs";
  * - macOS:   `v10` + AES-128-CBC. Key = PBKDF2-HMAC-SHA1(masterPw, "saltysalt",
  *            1003, 16). IV = 16×0x20. The master password is a random value in
  *            the login keychain under service "<AppName> Safe Storage".
- * - Windows: DPAPI (`CryptProtectData`, CurrentUser) — opaque bytes, no prefix.
- * - Linux:   `v10` + AES-128-CBC when a keyring (libsecret) holds the master
- *            password, else `v11` with the hardcoded "peanuts" password (the
- *            "basic_text" backend). Same KDF/cipher as macOS.
+ * - Windows: `v10` + AES-256-GCM. Key = 32 random bytes, DPAPI-encrypted and
+ *            stored in the "Local State" JSON file under
+ *            `os_crypt.encrypted_key`. Ciphertext = v10 + nonce(12) +
+ *            AES-256-GCM(secret, nonce, key) + tag(16). Legacy secrets used raw
+ *            DPAPI without a prefix; decryptSecret falls back to that.
+ * - Linux:   `v10`/`v11` + AES-128-CBC. Key = PBKDF2-HMAC-SHA1(masterPw,
+ *            "saltysalt", iterations, 16). IV = 16×0x20. The master password
+ *            comes from libsecret (keyring) or the hardcoded "peanuts" string
+ *            (basic_text backend). Iteration count and version prefix vary by
+ *            Chromium generation (1+1iter modern, 1003+1iter older).
  *
  * Test seam: when FIRECONNECT_VSCODE_SECRET_PLAINTEXT is set, encrypt/decrypt are
  * the identity (the raw key is stored verbatim). VS Code does NOT read such a
@@ -137,8 +146,27 @@ function linuxReadMasterPassword(variant) {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Windows — DPAPI via PowerShell (ProtectedData, CurrentUser)                 */
+/* Windows — DPAPI + AES-256-GCM (modern Chromium OSCrypt)                     */
+/*                                                                            */
+/* Modern Chromium on Windows does NOT use raw DPAPI on each secret. Instead:  */
+/*  1. A random 32-byte AES-256-GCM key is generated on first launch.          */
+/*  2. The key is DPAPI-encrypted, prefixed with "DPAPI", base64-encoded, and  */
+/*     stored in the "Local State" JSON file under os_crypt.encrypted_key.     */
+/*  3. Each secret is encrypted with AES-256-GCM using that key.               */
+/*  4. The ciphertext format is: "v10" + nonce(12) + AES-256-GCM ciphertext.   */
+/*                                                                            */
+/* Legacy (older Chromium) used raw DPAPI on the whole plaintext with no       */
+/* prefix. decryptSecret tries v10+GCM first, then falls back to raw DPAPI.    */
 /* -------------------------------------------------------------------------- */
+
+/** AES-256-GCM key size in bytes. */
+const WIN_GCM_KEY_SIZE = 32;
+/** AES-256-GCM nonce size in bytes (Chromium uses 96-bit nonces). */
+const WIN_GCM_NONCE_SIZE = 12;
+/** Provider prefix Chromium prepends to AES-256-GCM ciphertext on Windows. */
+const WIN_V10_PREFIX = Buffer.from("v10", "latin1");
+/** Prefix on the DPAPI-encrypted key in Local State (not on the secret itself). */
+const WIN_DPAPI_KEY_PREFIX = Buffer.from("DPAPI", "latin1");
 
 /**
  * Run a PowerShell snippet that prints a single base64 line, or "" on failure.
@@ -181,6 +209,106 @@ function windowsUnprotect(blob) {
   ].join(";");
   const out = runPowerShell(script);
   return out ? Buffer.from(out, "base64").toString("utf8") : "";
+}
+
+/**
+ * Resolve the path to VS Code's "Local State" file from a `state.vscdb` path.
+ * `state.vscdb` is at `<userData>/User/globalStorage/state.vscdb`, and
+ * `Local State` is at `<userData>/Local State`.
+ * @param {string} stateDbPath
+ * @returns {string}
+ */
+function localStatePathFromStateDb(stateDbPath) {
+  // <userData>/User/globalStorage/state.vscdb -> <userData>/Local State
+  return path.join(path.dirname(stateDbPath), "..", "..", "Local State");
+}
+
+/**
+ * Read, DPAPI-decrypt, and return the 32-byte AES-256-GCM key from VS Code's
+ * "Local State" file. If the key doesn't exist yet, generate a new one,
+ * DPAPI-encrypt it, and write it back so VS Code can use it on next launch.
+ * @param {string} localStatePath
+ * @returns {Promise<Buffer | null>} 32-byte key, or null on failure
+ */
+async function windowsGetOrCreateAesKey(localStatePath) {
+  let localState = {};
+  if (existsSync(localStatePath)) {
+    try {
+      localState = JSON.parse(await readFile(localStatePath, "utf8"));
+    } catch {
+      localState = {};
+    }
+  }
+
+  const stored = localState?.os_crypt?.encrypted_key;
+  if (typeof stored === "string" && stored.length > 0) {
+    const decoded = Buffer.from(stored, "base64");
+    if (decoded.length > WIN_DPAPI_KEY_PREFIX.length &&
+        decoded.subarray(0, WIN_DPAPI_KEY_PREFIX.length).equals(WIN_DPAPI_KEY_PREFIX)) {
+      const encryptedKey = decoded.subarray(WIN_DPAPI_KEY_PREFIX.length);
+      const decrypted = windowsUnprotect(encryptedKey);
+      if (decrypted.length === WIN_GCM_KEY_SIZE) {
+        return Buffer.from(decrypted, "utf8");
+      }
+    }
+  }
+
+  // Key doesn't exist or is invalid — generate a new one.
+  const newKey = crypto.randomBytes(WIN_GCM_KEY_SIZE);
+  const protectedKey = windowsProtect(newKey.toString("binary"));
+  if (protectedKey.length === 0) {
+    return null;
+  }
+  const prefixed = Buffer.concat([WIN_DPAPI_KEY_PREFIX, protectedKey]);
+  localState.os_crypt = localState.os_crypt || {};
+  localState.os_crypt.encrypted_key = prefixed.toString("base64");
+
+  await mkdir(path.dirname(localStatePath), { recursive: true });
+  await writeFile(localStatePath, JSON.stringify(localState, null, "\t"), "utf8");
+
+  return newKey;
+}
+
+/**
+ * Encrypt a plaintext string using the v10 + AES-256-GCM format that modern
+ * Chromium's OSCrypt uses on Windows.
+ * @param {string} plaintext
+ * @param {Buffer} aesKey 32-byte AES-256 key
+ * @returns {Buffer} v10 + nonce(12) + AES-256-GCM ciphertext + tag
+ */
+function windowsGcmEncrypt(plaintext, aesKey) {
+  const nonce = crypto.randomBytes(WIN_GCM_NONCE_SIZE);
+  const cipher = crypto.createCipheriv("aes-256-gcm", aesKey, nonce);
+  const ciphertext = Buffer.concat([
+    cipher.update(plaintext, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+  // Chromium's format: nonce at the front, then ciphertext+tag
+  return Buffer.concat([WIN_V10_PREFIX, nonce, ciphertext, tag]);
+}
+
+/**
+ * Decrypt a v10-prefixed AES-256-GCM ciphertext.
+ * @param {Buffer} blob the full blob including the "v10" prefix
+ * @param {Buffer} aesKey 32-byte AES-256 key
+ * @returns {string} plaintext, or "" on failure
+ */
+function windowsGcmDecrypt(blob, aesKey) {
+  const body = blob.subarray(WIN_V10_PREFIX.length); // strip "v10"
+  if (body.length < WIN_GCM_NONCE_SIZE + 16) {
+    return ""; // too short: need at least nonce + tag
+  }
+  const nonce = body.subarray(0, WIN_GCM_NONCE_SIZE);
+  const ciphertext = body.subarray(WIN_GCM_NONCE_SIZE, body.length - 16);
+  const tag = body.subarray(body.length - 16);
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", aesKey, nonce);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
 }
 
 /* -------------------------------------------------------------------------- */
@@ -289,11 +417,17 @@ export async function encryptSecret(plaintext, { variant, stateDbPath } = {}) {
     return JSON.stringify(aesEncrypt(plaintext, pw, "v10"));
   }
   if (platform === "win32") {
-    const enc = windowsProtect(plaintext);
-    if (enc.length === 0) {
+    // Modern Chromium uses v10 + AES-256-GCM with a DPAPI-protected key stored
+    // in the "Local State" file. Raw DPAPI (the old approach) produces bytes
+    // with no v10 prefix that VS Code's OSCrypt can't decrypt.
+    const localStatePath = stateDbPath
+      ? localStatePathFromStateDb(stateDbPath)
+      : path.join(process.env.APPDATA || "", "Code", "Local State");
+    const aesKey = await windowsGetOrCreateAesKey(localStatePath);
+    if (!aesKey) {
       throw new Error(secretEncryptionUnavailableMessage(variant));
     }
-    return JSON.stringify(enc);
+    return JSON.stringify(windowsGcmEncrypt(plaintext, aesKey));
   }
   // linux / others — detect the exact OSCrypt parameters VS Code uses by
   // probing an existing secret in state.vscdb. Modern Chromium (Electron ~32+)
@@ -317,10 +451,10 @@ export async function encryptSecret(plaintext, { variant, stateDbPath } = {}) {
  * Decrypt a value read from `state.vscdb` (the JSON form of the safeStorage
  * ciphertext) back to plaintext. Returns "" when it can't be decrypted.
  * @param {string} stored
- * @param {{ variant?: "stable" | "insiders" }} [opts]
- * @returns {string}
+ * @param {{ variant?: "stable" | "insiders", stateDbPath?: string }} [opts]
+ * @returns {Promise<string>}
  */
-export function decryptSecret(stored, { variant } = {}) {
+export async function decryptSecret(stored, { variant, stateDbPath } = {}) {
   if (stored === "" || stored == null) {
     return "";
   }
@@ -340,6 +474,21 @@ export function decryptSecret(stored, { variant } = {}) {
   try {
     const platform = os.platform();
     if (platform === "win32") {
+      // Modern Chromium: v10 prefix + AES-256-GCM
+      if (blob.length > WIN_V10_PREFIX.length && blob.subarray(0, WIN_V10_PREFIX.length).equals(WIN_V10_PREFIX)) {
+        const localStatePath = stateDbPath
+          ? localStatePathFromStateDb(stateDbPath)
+          : path.join(process.env.APPDATA || "", "Code", "Local State");
+        const aesKey = await windowsGetOrCreateAesKey(localStatePath);
+        if (aesKey) {
+          const result = windowsGcmDecrypt(blob, aesKey);
+          if (result) {
+            return result;
+          }
+        }
+        return "";
+      }
+      // Legacy: raw DPAPI without prefix (older Chromium)
       return windowsUnprotect(blob);
     }
     if (platform === "darwin") {
@@ -389,6 +538,7 @@ export function isSecretEncryptionAvailable({ variant } = {}) {
     return macReadMasterPassword(variant).length > 0;
   }
   if (platform === "win32") {
+    // PowerShell is needed for DPAPI (to decrypt the AES key from Local State).
     return spawnSync("powershell", ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.Major"], {
       encoding: "utf8",
     }).status === 0;

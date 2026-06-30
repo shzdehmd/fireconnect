@@ -712,7 +712,7 @@ export async function readVscodeStoredKey(vscodePath, stateDbPath, arr) {
   if (!stored) {
     return "";
   }
-  const key = decryptSecret(stored, { variant: currentVariant(vscodePath) });
+  const key = await decryptSecret(stored, { variant: currentVariant(vscodePath), stateDbPath: dbPath });
   return isFireworksShapedKey(key) ? key.trim() : "";
 }
 
