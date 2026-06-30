@@ -212,6 +212,46 @@ function windowsUnprotect(blob) {
 }
 
 /**
+ * DPAPI-encrypt a raw Buffer and return the protected bytes as a Buffer.
+ * Unlike {@link windowsProtect} (which takes a string), this preserves binary
+ * data integrity — critical for the 32-byte AES key.
+ * @param {Buffer} data
+ * @returns {Buffer}
+ */
+function windowsProtectBuffer(data) {
+  const b64 = data.toString("base64");
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "Add-Type -AssemblyName System.Security",
+    `$bytes=[Convert]::FromBase64String('${b64}')`,
+    "$enc=[System.Security.Cryptography.ProtectedData]::Protect($bytes,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+    "[Convert]::ToBase64String($enc)",
+  ].join(";");
+  const out = runPowerShell(script);
+  return out ? Buffer.from(out, "base64") : Buffer.alloc(0);
+}
+
+/**
+ * DPAPI-decrypt a raw Buffer and return the plaintext as a Buffer.
+ * Unlike {@link windowsUnprotect} (which returns a UTF-8 string), this
+ * preserves binary data — critical for the 32-byte AES key.
+ * @param {Buffer} blob
+ * @returns {Buffer} decrypted bytes (empty on failure)
+ */
+function windowsUnprotectBuffer(blob) {
+  const b64 = blob.toString("base64");
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "Add-Type -AssemblyName System.Security",
+    `$bytes=[Convert]::FromBase64String('${b64}')`,
+    "$dec=[System.Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+    "[Convert]::ToBase64String($dec)",
+  ].join(";");
+  const out = runPowerShell(script);
+  return out ? Buffer.from(out, "base64") : Buffer.alloc(0);
+}
+
+/**
  * Resolve the path to VS Code's "Local State" file from a `state.vscdb` path.
  * `state.vscdb` is at `<userData>/User/globalStorage/state.vscdb`, and
  * `Local State` is at `<userData>/Local State`.
@@ -246,16 +286,16 @@ async function windowsGetOrCreateAesKey(localStatePath) {
     if (decoded.length > WIN_DPAPI_KEY_PREFIX.length &&
         decoded.subarray(0, WIN_DPAPI_KEY_PREFIX.length).equals(WIN_DPAPI_KEY_PREFIX)) {
       const encryptedKey = decoded.subarray(WIN_DPAPI_KEY_PREFIX.length);
-      const decrypted = windowsUnprotect(encryptedKey);
+      const decrypted = windowsUnprotectBuffer(encryptedKey);
       if (decrypted.length === WIN_GCM_KEY_SIZE) {
-        return Buffer.from(decrypted, "utf8");
+        return decrypted;
       }
     }
   }
 
   // Key doesn't exist or is invalid — generate a new one.
   const newKey = crypto.randomBytes(WIN_GCM_KEY_SIZE);
-  const protectedKey = windowsProtect(newKey.toString("binary"));
+  const protectedKey = windowsProtectBuffer(newKey);
   if (protectedKey.length === 0) {
     return null;
   }
